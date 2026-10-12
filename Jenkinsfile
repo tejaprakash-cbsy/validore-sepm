@@ -221,15 +221,16 @@ pipeline {
               @echo WORKSPACE  : %WORKSPACE%
               @echo BUILD_URL  : %BUILD_URL%
               @echo IMAGE_REF  : %IMAGE_REF%
+              @exit /b 0
             '''
           }
 
           // Validate that the Node major version meets requirements
-          def nodeVerRaw = isUnix() ? sh(script: 'node -v', returnStdout: true).trim() : bat(script: '@node -v', returnStdout: true).trim()
+          def nodeVerRaw = isUnix() ? sh(script: 'node -v', returnStdout: true).trim() : powershell(script: 'node -v', returnStdout: true).trim()
           def matcher = (nodeVerRaw =~ /v?(\d+)/)
           if (matcher.find()) {
             def nodeVersion = matcher.group(1).toInteger()
-            def required = params.NODE_VERSION_EXPECTED.toInteger()
+            def required = (params.NODE_VERSION_EXPECTED ?: '20').toInteger()
             if (nodeVersion < required) {
               error "Node.js ${nodeVersion} is below the required major version ${required}. " +
                     "Please upgrade the agent or adjust NODE_VERSION_EXPECTED."
@@ -265,6 +266,7 @@ pipeline {
               if errorlevel 1 exit /b %errorlevel%
               @echo === Installed packages ===
               call npm ls --depth=0 2>nul || exit /b 0
+              @exit /b 0
             '''
           }
         }
@@ -293,6 +295,7 @@ pipeline {
               call npm run lint
               if errorlevel 1 exit /b %errorlevel%
               @echo ✅ Lint passed — no ESLint errors found.
+              @exit /b 0
             '''
           }
         }
@@ -321,6 +324,7 @@ pipeline {
               call npx tsc --noEmit
               if errorlevel 1 exit /b %errorlevel%
               @echo ✅ Typecheck passed — no TypeScript errors found.
+              @exit /b 0
             '''
           }
         }
@@ -355,6 +359,7 @@ pipeline {
               call npm run test:ci
               if errorlevel 1 exit /b %errorlevel%
               @echo ✅ All unit tests passed.
+              @exit /b 0
             '''
           }
         }
@@ -399,6 +404,7 @@ pipeline {
               if exist .next\\standalone echo .next\\standalone created successfully.
               if exist .next\\static echo .next\\static created successfully.
               @echo ✅ Build succeeded.
+              @exit /b 0
             '''
           }
         }

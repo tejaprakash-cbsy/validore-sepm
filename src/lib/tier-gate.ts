@@ -9,15 +9,19 @@ export type Feature =
   | 'canPricingSimulator' | 'canCrowdfunding' | 'canPitchDeck'
 
 export async function getUserWithTierConfig(supabaseId: string) {
-  const user = await db.query.users.findFirst({
-    where: eq(users.supabaseId, supabaseId),
-  })
-  if (!user) return null
+  try {
+    const user = await db.query.users.findFirst({
+      where: eq(users.supabaseId, supabaseId),
+    })
+    if (!user) return null
 
-  const config = await db.query.tierConfig.findFirst({
-    where: eq(tierConfig.tier, user.tier),
-  })
-  return { user, config }
+    const config = await db.query.tierConfig.findFirst({
+      where: eq(tierConfig.tier, user.tier),
+    })
+    return { user, config }
+  } catch {
+    return null
+  }
 }
 
 export async function canUserAccess(supabaseId: string, feature: Feature): Promise<boolean> {

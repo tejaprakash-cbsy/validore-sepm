@@ -130,10 +130,37 @@ pipeline {
             bat '@git log --oneline -5 || exit /b 0'
           }
 
-          def sha = env.GIT_COMMIT ?: (isUnix() ? sh(script: 'git rev-parse HEAD', returnStdout: true).trim() : bat(script: '@git rev-parse HEAD', returnStdout: true).trim())
-          def branch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: (isUnix() ? sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim() : bat(script: '@git rev-parse --abbrev-ref HEAD', returnStdout: true).trim())
-          def author = isUnix() ? sh(script: 'git log -1 --format="%an <%ae>"', returnStdout: true).trim() : bat(script: '@git log -1 --format="%an <%ae>"', returnStdout: true).trim()
-          def msg    = isUnix() ? sh(script: 'git log -1 --format="%s"', returnStdout: true).trim() : bat(script: '@git log -1 --format="%s"', returnStdout: true).trim()
+          def sha = env.GIT_COMMIT
+          if (!sha) {
+            try {
+              sha = isUnix() ? sh(script: 'git rev-parse HEAD', returnStdout: true).trim() : powershell(script: 'git rev-parse HEAD', returnStdout: true).trim()
+            } catch (Exception e) {
+              sha = env.BUILD_NUMBER ?: 'dev'
+            }
+          }
+
+          def branch = env.BRANCH_NAME ?: env.GIT_BRANCH
+          if (!branch) {
+            try {
+              branch = isUnix() ? sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim() : powershell(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+            } catch (Exception e) {
+              branch = 'main'
+            }
+          }
+
+          def author = 'Unknown'
+          def msg    = 'No commit message'
+          try {
+            if (isUnix()) {
+              author = sh(script: 'git log -1 --format="%an <%ae>"', returnStdout: true).trim()
+              msg    = sh(script: 'git log -1 --format="%s"', returnStdout: true).trim()
+            } else {
+              author = powershell(script: 'git log -1 --format="%an <%ae>"', returnStdout: true).trim()
+              msg    = powershell(script: 'git log -1 --format="%s"', returnStdout: true).trim()
+            }
+          } catch (Exception e) {
+            echo "Warning: git log query failed (${e.message}); using fallback values"
+          }
 
           // Normalize branch name if prefixed with 'origin/'
           if (branch.startsWith('origin/')) {
@@ -235,6 +262,7 @@ pipeline {
             bat '''
               @echo Installing dependencies with npm ci...
               call npm ci --legacy-peer-deps --prefer-offline
+              if errorlevel 1 exit /b %errorlevel%
               @echo === Installed packages ===
               call npm ls --depth=0 2>nul || exit /b 0
             '''
@@ -263,6 +291,7 @@ pipeline {
             bat '''
               @echo Running ESLint...
               call npm run lint
+              if errorlevel 1 exit /b %errorlevel%
               @echo ✅ Lint passed — no ESLint errors found.
             '''
           }
@@ -290,6 +319,7 @@ pipeline {
             bat '''
               @echo Running tsc --noEmit (strict type checking)...
               call npx tsc --noEmit
+              if errorlevel 1 exit /b %errorlevel%
               @echo ✅ Typecheck passed — no TypeScript errors found.
             '''
           }
@@ -323,6 +353,7 @@ pipeline {
               @echo CI=true prevents .env.local loading; DB-backed tests self-skip.
               @echo All AI providers and web-search are mocked — no API credits spent.
               call npm run test:ci
+              if errorlevel 1 exit /b %errorlevel%
               @echo ✅ All unit tests passed.
             '''
           }
@@ -363,6 +394,7 @@ pipeline {
             bat '''
               @echo Building Next.js standalone bundle...
               call npm run build
+              if errorlevel 1 exit /b %errorlevel%
               @echo === Build output ===
               if exist .next\\standalone echo .next\\standalone created successfully.
               if exist .next\\static echo .next\\static created successfully.
@@ -390,16 +422,18 @@ pipeline {
     // STAGE 8 — Docker Build
     // ──────────────────────────────────────────────────────────────────────────
     stage('Docker Build') {
-      when {
-        expression { !params.SKIP_DOCKER }
-      }
-
       steps {
         echo '╔══════════════════════════════════════╗'
         echo '║  STAGE 8: Docker Image Build          ║'
         echo '╚══════════════════════════════════════╝'
 
         script {
+          def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+          if (skipDocker) {
+            echo '⏭  SKIPPED: Docker Image Build stage skipped because SKIP_DOCKER is true. Docker Desktop is not required for core CI pipeline execution.'
+            return
+          }
+
           def dockerAvailable = false
           try {
             if (isUnix()) {
@@ -471,16 +505,18 @@ pipeline {
     // STAGE 9 — Security Scan (Trivy)
     // ──────────────────────────────────────────────────────────────────────────
     stage('Security Scan (Trivy)') {
-      when {
-        expression { !params.SKIP_DOCKER }
-      }
-
       steps {
         echo '╔══════════════════════════════════════╗'
         echo '║  STAGE 9: Trivy Security Scan         ║'
         echo '╚══════════════════════════════════════╝'
 
         script {
+          def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+          if (skipDocker) {
+            echo '⏭  SKIPPED: Security Scan (Trivy) stage skipped because SKIP_DOCKER is true. Container image vulnerability scanning genuinely requires the built Docker container image.'
+            return
+          }
+
           def trivyAvailable = false
           try {
             if (isUnix()) {
@@ -563,29 +599,31 @@ pipeline {
     // STAGE 10 — Publish Image
     // ──────────────────────────────────────────────────────────────────────────
     stage('Publish Image') {
-      when {
-        allOf {
-          expression { !params.SKIP_DOCKER }
-          anyOf {
-            branch 'main'
-            branch 'master'
-          }
-        }
-      }
-
       steps {
         echo '╔══════════════════════════════════════╗'
         echo '║  STAGE 10: Publish to Registry        ║'
         echo '╚══════════════════════════════════════╝'
 
-        withCredentials([
-          usernamePassword(
-            credentialsId: 'validore-registry',
-            usernameVariable: 'REGISTRY_USER',
-            passwordVariable: 'REGISTRY_PASS'
-          )
-        ]) {
-          script {
+        script {
+          def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+          if (skipDocker) {
+            echo '⏭  SKIPPED: Container Image Publish stage skipped because SKIP_DOCKER is true. No container image was created to publish.'
+            return
+          }
+
+          def isMain = (env.GIT_BRANCH_CLEAN == 'main' || env.GIT_BRANCH_CLEAN == 'master')
+          if (!isMain) {
+            echo "⏭  SKIPPED: Image publish skipped on non-main branch: ${env.GIT_BRANCH_CLEAN}"
+            return
+          }
+
+          withCredentials([
+            usernamePassword(
+              credentialsId: 'validore-registry',
+              usernameVariable: 'REGISTRY_USER',
+              passwordVariable: 'REGISTRY_PASS'
+            )
+          ]) {
             if (isUnix()) {
               sh """
                 echo "Logging in to container registry..."
@@ -636,39 +674,48 @@ pipeline {
     // STAGE 11 — Deploy Staging
     // ──────────────────────────────────────────────────────────────────────────
     stage('Deploy Staging') {
-      when {
-        allOf {
-          expression { !params.SKIP_DOCKER && params.DEPLOY_STAGING }
-          anyOf {
-            branch 'main'
-            branch 'master'
-          }
-        }
-      }
-
-      // Manual approval gate — pauses the pipeline until an operator clicks.
-      input {
-        message 'Deploy container image to STAGING?'
-        ok 'Yes, deploy to staging'
-        submitter 'admin,deployer'
-        parameters {
-          string(
-            name: 'STAGING_NOTES',
-            defaultValue: '',
-            description: 'Optional release notes for this deployment'
-          )
-        }
-      }
-
       steps {
         echo '╔══════════════════════════════════════╗'
         echo '║  STAGE 11: Deploy to Staging          ║'
         echo '╚══════════════════════════════════════╝'
 
         script {
+          def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+          if (skipDocker) {
+            echo '⏭  SKIPPED: Staging Deployment stage skipped because SKIP_DOCKER is true. Container deployment requires the Docker image and runtime.'
+            return
+          }
+
+          def deployStaging = (params.DEPLOY_STAGING?.toString()?.trim()?.equalsIgnoreCase('true') || env.DEPLOY_STAGING?.toString()?.trim()?.equalsIgnoreCase('true'))
+          if (!deployStaging) {
+            echo '⏭  SKIPPED: Staging deployment skipped because DEPLOY_STAGING is set to false.'
+            return
+          }
+
+          def isMain = (env.GIT_BRANCH_CLEAN == 'main' || env.GIT_BRANCH_CLEAN == 'master')
+          if (!isMain) {
+            echo "⏭  SKIPPED: Staging deployment skipped on non-main branch: ${env.GIT_BRANCH_CLEAN}"
+            return
+          }
+
+          // Manual approval gate — pauses the pipeline until an operator clicks.
+          def userInput = input(
+            id: 'DeployApproval',
+            message: 'Deploy container image to STAGING?',
+            ok: 'Yes, deploy to staging',
+            submitter: 'admin,deployer',
+            parameters: [
+              string(
+                name: 'STAGING_NOTES',
+                defaultValue: '',
+                description: 'Optional release notes for this deployment'
+              )
+            ]
+          )
+
           echo "Deploying ${env.IMAGE_REF} to staging..."
 
-          def notes = env.STAGING_NOTES ?: ''
+          def notes = (userInput instanceof Map ? userInput.STAGING_NOTES : userInput) ?: ''
           def branchClean = env.GIT_BRANCH_CLEAN ?: 'main'
           def shaFull = env.GIT_SHA_FULL ?: 'HEAD'
 
@@ -685,7 +732,7 @@ pipeline {
 
       post {
         success {
-          echo "✅ Staging deployment of ${env.IMAGE_REF} completed."
+          echo "✅ Staging deployment completed."
         }
         failure {
           echo '❌ Staging deployment FAILED. Rolling back is a manual step; check the orchestrator.'
@@ -705,20 +752,25 @@ pipeline {
 
       // Clean up dangling Docker images if docker is available on the agent
       script {
-        try {
-          if (isUnix()) {
-            sh '''
-              docker image prune -f --filter "label=org.opencontainers.image.source" 2>/dev/null || true
-              docker image rm "${IMAGE_REF}" 2>/dev/null || true
-            '''
-          } else {
-            bat '''
-              where docker >nul 2>nul && docker image prune -f --filter "label=org.opencontainers.image.source" >nul 2>nul || exit /b 0
-              where docker >nul 2>nul && docker image rm "%IMAGE_REF%" >nul 2>nul || exit /b 0
-            '''
+        def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+        if (skipDocker) {
+          echo 'Docker cleanup skipped (SKIP_DOCKER is true).'
+        } else {
+          try {
+            if (isUnix()) {
+              sh '''
+                docker image prune -f --filter "label=org.opencontainers.image.source" 2>/dev/null || true
+                docker image rm "${IMAGE_REF}" 2>/dev/null || true
+              '''
+            } else {
+              bat '''
+                where docker >nul 2>nul && docker image prune -f --filter "label=org.opencontainers.image.source" >nul 2>nul || exit /b 0
+                where docker >nul 2>nul && docker image rm "%IMAGE_REF%" >nul 2>nul || exit /b 0
+              '''
+            }
+          } catch (Exception e) {
+            // Docker cleanup is best-effort
           }
-        } catch (Exception e) {
-          // Docker cleanup is best-effort
         }
       }
 
@@ -741,18 +793,25 @@ pipeline {
     }
 
     success {
-      echo "✅ PIPELINE SUCCESS"
-      echo "Image ${env.IMAGE_REF} was built${(env.GIT_BRANCH_CLEAN == 'main' || env.GIT_BRANCH_CLEAN == 'master') ? ', scanned, and published' : ' (no publish on feature branches)'}."
+      script {
+        def skipDocker = (params.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true') || env.SKIP_DOCKER?.toString()?.trim()?.equalsIgnoreCase('true'))
+        if (skipDocker) {
+          echo '✅ PIPELINE SUCCESS: Core CI stages (Checkout, Environment Info, Dependencies, Lint, Typecheck, Unit Tests, Production Build) completed successfully.'
+          echo 'Docker stages (Image Build, Security Scan, Publish, Deployment) were skipped as requested.'
+        } else {
+          echo "✅ PIPELINE SUCCESS"
+          echo "Image ${env.IMAGE_REF} was built${(env.GIT_BRANCH_CLEAN == 'main' || env.GIT_BRANCH_CLEAN == 'master') ? ', scanned, and published' : ' (no publish on feature branches)'}."
+        }
+      }
     }
 
     failure {
       echo '❌ PIPELINE FAILED'
-      echo 'No image was published. Check the failed stage and fix before re-running.'
+      echo 'Check the failed stage and fix before re-running.'
     }
 
     unstable {
       echo '⚠️  PIPELINE UNSTABLE — tests failed or produced warnings.'
-      echo 'No image was published.'
     }
 
     aborted {
